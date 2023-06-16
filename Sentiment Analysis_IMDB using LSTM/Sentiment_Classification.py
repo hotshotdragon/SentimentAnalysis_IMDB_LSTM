@@ -1,45 +1,89 @@
-import tensorflow_datasets as tfds
-import tensorflow as tf
+# ClearML - Keras with Tensorboard example code, automatic logging model and Tensorboard outputs
+#
+# Train a simple deep NN on the MNIST dataset.
+# Gets to 98.40% test accuracy after 20 epochs
+# (there is *a lot* of margin for parameter tuning).
+# 2 seconds per epoch on a K520 GPU.
+from __future__ import print_function
 
+import tempfile
+import os
+import numpy as np
+print('NP Imported')
+import pandas as pd
+print('pd Imported')
+import tensorflow as tf  # noqa: F401
+print('tf Imported')
+from tensorflow.keras import utils as np_utils
+from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard
+from tensorflow.keras.datasets import mnist
+from tensorflow.keras.layers import Activation, Dense
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.optimizers import RMSprop
 
-dataset,info = tfds.load('imdb_reviews/subwords8k',with_info=True,as_supervised=True)
-train_dataset, test_dataset = dataset['train'],dataset['test']
-encoder = info.features['text'].encoder
+from clearml import Task, Logger
 
-BUFFER_SIZE = 10000
-BATCH_SIZE = 64
+# Connecting ClearML with the current process,
+# from here on everything is logged automatically
+task = Task.init(project_name='error_check', task_name='check-2')
 
-padded_shape =  ([None],())
-train_dataset = train_dataset.shuffle(BUFFER_SIZE).padded_batch(BATCH_SIZE,padded_shapes = padded_shape)
+# the data, shuffled and split between train and test sets
+nb_classes = 10
+(X_train, y_train), (X_test, y_test) = mnist.load_data()
 
-test_dataset = test_dataset.padded_batch(BATCH_SIZE,padded_shapes = padded_shape)
+X_train = X_train.reshape(60000, 784).astype('float32')/255.
+X_test = X_test.reshape(10000, 784).astype('float32')/255.
+print(X_train.shape[0], 'train samples')
+print(X_test.shape[0], 'test samples')
 
-model = tf.keras.Sequential([tf.keras.layers.Embedding(encoder.vocab_size,64),
-                             tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(64)),
-                             tf.keras.layers.Dense(64,activation='relu'),
-                             tf.keras.layers.Dense(1,activation='sigmoid')])
-model.compile(optimizer=tf.keras.optimizers.Adam(1e-4),
-              loss='binary_crossentropy',metrics=['accuracy'])
+# convert class vectors to binary class matrices
+Y_train = np_utils.to_categorical(y_train, nb_classes)
+Y_test = np_utils.to_categorical(y_test, nb_classes)
 
-history = model.fit(train_dataset,epochs = 5,validation_data=test_dataset,validation_steps=30)
+args = {'batch_size': 32,
+        'epochs': 5,
+        'layer_1': 2,
+        'layer_2': 3,
+        'layer_3': nb_classes,
+        'layer_4': 5,
+        }
+args = task.connect(args)
 
-def pad_to_size(vec,size):
-    zeros = [0]*(size-len(vec))
-    vec.extend(zeros)
-    return vec
+model = Sequential()
+model.add(Dense(args['layer_1'], input_shape=(784,)))
+model.add(Activation('relu'))
+# model.add(Dropout(0.2))
+model.add(Dense(args['layer_2']))
+model.add(Activation('relu'))
+# model.add(Dropout(0.2))
+model.add(Dense(args['layer_3']))
+model.add(Activation('softmax'))
 
-def sample_predict(sentence,pad):
-    encoded_sample_pred_text = encoder.encode(sentence)
-    if pad:
-        encoded_sample_pred_text = pad_to_size(encoded_sample_pred_text,64)
-    encoded_sample_pred_text = tf.cast(encoded_sample_pred_text,tf.float32)
-    predictions = model.predict(tf.expand_dims(encoded_sample_pred_text))
-    return predictions
+model2 = Sequential()
+model2.add(Dense(args['layer_4'], input_shape=(784,)))
+model2.add(Activation('relu'))
 
-sample_text = 'This movie sucks ass. No Character development, no proper direction, waste of time and money.'
-predictions = sample_predict(sample_text,pad = True) * 100
-print(predictions)
+model.summary()
 
-sample_text = 'This movie is fantastic. MUST WATCH'
-predictions = sample_text(sample_text,pad=True) * 100
-print(predictions)
+model.compile(loss='categorical_crossentropy',
+              optimizer=RMSprop(),
+              metrics=['accuracy'])
+
+# Advanced: setting model class enumeration
+labels = dict(('digit_%d' % i, i) for i in range(10))
+task.set_model_label_enumeration(labels)
+
+output_folder = os.path.join(tempfile.gettempdir(), 'keras_example')
+
+board = TensorBoard(log_dir=output_folder, write_images=False)
+model_store = ModelCheckpoint(filepath=os.path.join(output_folder, 'weight.hdf5'))
+
+history = model.fit(X_train, Y_train,
+                    batch_size=args['batch_size'], epochs=args['epochs'],
+                    callbacks=[board, model_store],
+                    validation_data=(X_test, Y_test))
+score = model.evaluate(X_test, Y_test, verbose=0)
+print('Test score:', score[0])
+print('Test accuracy:', score[1])
+Logger.current_logger().report_scalar(title='evaluate', series='score', value=score[0], iteration=args['epochs'])
+Logger.current_logger().report_scalar(title='evaluate', series='accuracy', value=score[1], iteration=args['epochs'])
