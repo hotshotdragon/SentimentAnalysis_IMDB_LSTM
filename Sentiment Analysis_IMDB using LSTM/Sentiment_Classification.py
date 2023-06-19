@@ -25,7 +25,7 @@ from clearml import Task, Logger
 
 # Connecting ClearML with the current process,
 # from here on everything is logged automatically
-task = Task.init(project_name='error_check', task_name='check-2')
+task = Task.init(project_name='TEST-1-CLEARML-AGENT', task_name='check-1')
 
 # the data, shuffled and split between train and test sets
 nb_classes = 10
